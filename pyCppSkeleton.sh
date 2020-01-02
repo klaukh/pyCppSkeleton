@@ -1,6 +1,3 @@
-# TODO: Modify tests
-# TODO: Check for src/include files inclusions
-
 ## Shell script to build a Python-C++ package skeleton
 
 #!/bin/bash
@@ -85,9 +82,16 @@ echo "Downloading pybind11"
 wget https://github.com/pybind/pybind11/archive/v2.4.3.tar.gz
 echo "Unpacking pybind11"
 tar -xf v2.4.3.tar.gz
-mv pybind11-2.4.3 $1/lib/pybind11
-rm -rf pybind11-2.3.4
+mv -f pybind11-2.4.3 $1/lib/pybind11
 rm v2.4.3.tar.gz
+
+
+
+## -----------------------
+## Load pybind11 to handle the bindings
+echo "Downloading Catch2"
+wget https://github.com/catchorg/Catch2/releases/download/v2.11.1/catch.hpp 
+mv -f catch.hpp $1/lib
 
 
 ## -------------------
@@ -210,24 +214,29 @@ echo "$cfg" > $1/setup.cfg
 
 ## ----------------------
 echo Creating Hello World
+
 init="# We've coded the bindings so that the source files behave like modules
 from .hello_world_cpp import *
 
 # Standard python imports
 from .hello_world_python import *
+
+# Remove dunders
+__all__ = [f for f in dir() if not f.startswith(\"_\")]
 "
 echo "$init" > "$1/src/$1/__init__.py"
 
-rm -f $1/src/$1/hello_world.py
 hello_world_python="def greeting_py():
     \"\"\"A simple Python function\"\"\"  
     print(\"Hello World, from Python!\")
 "
+
 echo "$hello_world_python" > $1/src/$1/hello_world_python.py
 
 
 ## -----------------------
 echo Creating C++ functions
+
 hello_world_hpp="#include <iostream>
 
 /*! A simple C++ function */
@@ -235,7 +244,6 @@ void greeting_cpp();
 "
 
 echo "$hello_world_hpp" > $1/src/$1/hello_world_cpp.hpp
-
 
 hello_world_cpp="#include <pybind11/pybind11.h>
 #include \"hello_world_cpp.hpp\"
@@ -249,9 +257,26 @@ namespace py = pybind11;
 
 PYBIND11_MODULE(hello_world_cpp, m)
 {
-    m.def(\"greeting_cpp\", &greeting_cpp);
-}
+    m.doc() = R\"pbdoc(
+        A Pybind11 example
+        ------------------
+        .. currentmodule:: hello_world_cpp
+        .. autosummary::
+           :toctree: _generate
 
+           greeting_cpp
+    )pbdoc\";
+
+    m.def(\"greeting_cpp\", &greeting_cpp, R\"pbdoc(
+        Saying hello from C++    
+    )pbdoc\");
+
+#ifdef VERSION_INFO
+    m.attr(\"__version__\") = VERSION_INFO;
+#else
+    m.attr(\"__version__\") = \"dev\";
+#endif
+}
 "
 
 echo "$hello_world_cpp" > $1/src/$1/hello_world_cpp.cpp
@@ -261,10 +286,12 @@ echo "$hello_world_cpp" > $1/src/$1/hello_world_cpp.cpp
 ## CMakeLists for build
 
 cmake="cmake_minimum_required(VERSION 2.8.12)
-project(test)
+project($1)
+
+# Set include directories
 
 # Set source directory
-set(SOURCE_DIR \"src/test\")
+set(SOURCE_DIR \"src/$1\")
 
 # Tell CMake that headers are also in SOURCE_DIR
 include_directories(\${SOURCE_DIR})
@@ -272,26 +299,80 @@ set(SOURCES \"\${SOURCE_DIR}/hello_world_cpp.cpp\")
 
 # Generate Python module
 add_subdirectory(lib/pybind11)
-
 pybind11_add_module(hello_world_cpp \${SOURCES})
+
+# Generate C++ Tests
+SET(TEST_DIR \"tests\")
+SET(TESTS \${SOURCES}
+    \"\${TEST_DIR}/test_init.cpp\"
+    \"\${TEST_DIR}/test_hello_world.cpp\"
+)
+
+find_package(PythonLibs REQUIRED)
+
+include_directories(
+    \${PYTHON_INCLUDE_DIRS}
+    lib
+    lib/pybind11/include
+)
+
+# Change the build directory for these to the tests directory
+
+SET(PROJECT_TEST \"\${PROJECT_NAME}_test\")
+add_executable(\${PROJECT_TEST} \${TESTS})
+message(\"Begin message\")
+message(\"\${PROJECT_SOURCE_DIR}/\${TEST_DIR}\") 
+set_target_properties(
+    \${PROJECT_TEST} 
+    PROPERTIES RUNTIME_OUTPUT_DIRECTORY_RELEASE 
+    \"\${PROJECT_SOURCE_DIR}/\${TEST_DIR}\"
+)
+target_link_libraries(\${PROJECT_TEST} \${PYTHON_LIBRARIES})
 "
 
 echo "$cmake" > $1/CMakeLists.txt
 
 ## -----------------------
 echo Creating tests
+
+test="#define CATCH_CONFIG_MAIN
+#include <catch.hpp>
+"
+
+echo "$test" > $1/tests/test_init.cpp
+
+test="#include <catch.hpp>
+#include \"hello_world_cpp.hpp\"
+
+TEST_CASE(\"Hello World\")
+{
+    greeting_cpp();
+    SUCCEED();
+}
+"
+
+echo "$test" > $1/tests/test_hello_world.cpp
+
 echo "" > $1/tests/__init__.py
 
 test="from unittest import TestCase
 
-import test
+import os
+import subprocess
+import $1
 
 class SampleTest(TestCase):
     def test_py_is_none(self):
-        self.assertIsNone(test.hello_world_python.greeting_py())
+        self.assertIsNone($1.hello_world_python.greeting_py())
 
     def test_cpp_is_none(self):
-        self.assertIsNone(test.hello_world_cpp.greeting_cpp())
+        self.assertIsNone($1.hello_world_cpp.greeting_cpp())
+
+    def test_cpp_test(self):
+        print(\"\n\nRunning C++ tests...\")
+        subprocess.check_call(os.path.join(os.path.dirname(
+            os.path.relpath(__file__)), \"$1_test\"))
+
 
 if __name__ == \"__main__\":
     unittest.main()
@@ -299,5 +380,4 @@ if __name__ == \"__main__\":
 "
 
 echo "$test" > $1/tests/hello_world_test.py
-
 
